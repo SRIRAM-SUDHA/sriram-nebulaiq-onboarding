@@ -176,3 +176,169 @@ its helps to find out the spikes, patterns, latency, changes
 `Span: payment.verify
 Start: 10:22:00
 End:   10:22:180`
+
+![observabilty](resource/screenshots/observabilty-flow.png)
+
+## 2. Data Collection Architecture
+
+### What is a collector
+
+A collector is an Agent that collect telementory data which is Log,metrics,traces before sending it to the backend observablity
+
+#### Why do we need it instead of directly sending to backend
+
+While the observablity server is running down and if we are trying sending data directly to the observablity its will take time to respond so its going to effect our main application but if we use collector agent the appliction will send its telementory data to local agent and the local agent works asyncronously to send data to backend and also performs protocal transform to standard **OTLP** amd do
+retries.
+
+### Collection models
+
+1. Agent-based collection
+
+   - we install an agent process on VM, server.
+   - the agent works locally and handles all telementory related work
+   - its work even backend is unreachable
+   - performs batching so its decrease load on the backend
+   - it can process, filter telememtory before sending
+
+   1. its uses more CPU and Memory
+   2. its requires installation and updation for newer version
+
+2. Agentless Collection
+
+   - No local agent running on the server
+   - no installation needed
+   - its good for serverless (
+     cloud providers
+     )
+   - cloud providers collecting AWS Lambda logs via CloudWatch
+
+   1. harder for debuging
+   2. more latency as it need to pass threw multiple cloud services
+
+3. eBPF-Based Collection
+
+   - is a Linux kernel technology that allows running programs inside the kernel without modifying kernel code
+
+   - its doesnt require instrumentation
+
+   - its works with any language
+
+   - it can observe function calss, network calls, system calls, events.
+
+   - low overhead as its runs direcly in kernel
+
+   1. its require Linux kernel ≥ 5.X
+   2. harder to debug
+   3. Not available in windows
+
+### Instrumentation
+
+Instrumentation means adding logic(code) to your application to collect telemetry data
+
+#### Manual Instrumentation
+
+Addind logic manually to collect the telemetry data
+
+- it gives us full control
+- We can able to collect whichever the data we needed
+- Unique logs that no library can auto-generate
+- we can write our custom logic
+
+1. its need time and work force
+2. Sometimes oversight can be happen
+
+#### Auto-Instrumentation
+
+Instrumentation added automatically by a library/agent without modifying your application code
+
+- it overide HTTP request
+- Its wrap around DB Query
+- it can listen incoming
+  and outgoing HTTP trace
+- It need less workforce
+
+1. Custom logic is missing
+2. it cn increase the overhead by adding the data that we dont require
+
+#### Push Vs Pull Models
+
+1. **Push Model**
+
+   - A serivce push telemetry data to a collector or backend at regular intervals
+
+   ```
+   App -> (push at regualar interval) -> collector/Backend
+   ```
+
+   - when the data need to send to different applications
+   - when its need to perform retries and buffering, if the backend is down.
+     -frontend and serverless
+
+2. **Pull Model**
+
+   - the backend scrapes the source endpoint to retrive telemetry
+
+   - when we want to avoid agent installation
+   - easy to know whether the service is down or not
+
+### processing happens at collection point
+
+#### Filtering Unwanted Data
+
+Remove telemetry that is noisy, too expensive and not needed
+
+its svaes storagecost, reduce network bandwidth, reduces noise so alerts are meaninfful
+
+#### Sampling Strategies
+
+Sampling means reducing the volume of data by following one of the Strategies.
+
+1. **Head-based Sampling :**
+   Decision made at the beginning of the request. Its good for low latency.low overhead but may miss errors requests
+   eg: Sampling 1% of incoming requests
+
+2. **Tail-Based Sampling :**
+   Decision made after the trace is complete.
+   collector waits and send the intresting traces
+
+3. **Probabilistic Sampling :**
+   Use probability logic (e.g., 10%) for consistent sampling. its good for large data
+
+#### Buffering and Batching
+
+**Buffering** is storing the telemetry data temporarily like sending data after collecting 100 log lines
+
+**Batching** is sending the data at regular interval of time like sending the logs collected for every 10 sec
+
+#### Metadata Enrichment(Tags, Labels, Context)
+
+collector adds additional data automatically like userId, env, region, serviceName so that it makes telemetry searchable, filterable
+
+#### Protocol Translation
+
+Different tools use different protocols. Collector can convert one protocol to another standardize format like `StatsD → OTLP`
+
+### Collection at different layers:
+
+#### Application layer (instrumented code)
+
+Using liberary and manual instrumentation at the code base level to emit the telementory data, like custom matrics , traces, application logs
+
+#### System layer (host metrics, system logs)
+
+Using Node exported,Windows performance counters to emit the system logs like CPU, Memory usage, Disk IO, System logs
+
+#### Network layer (packet capture)
+
+Using Service mesh telemetry, Sidecars, Sidecars to emit the betwork logs like paket loss, request latency, connection error.
+
+#### Kernel layer (eBPF)
+
+Using eBPF programs to collect kernel level termentory data like process-level telemetry,
+network events, detailed performance data
+
+![architecture of collection](resource/screenshots/architecture-of-collection.png)
+
+---
+
+## Backend Pipeline Architecture
