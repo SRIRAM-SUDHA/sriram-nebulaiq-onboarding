@@ -341,4 +341,637 @@ network events, detailed performance data
 
 ---
 
-## Backend Pipeline Architecture
+## 3. Backend Pipeline Architecture
+
+### Ingestion Layer
+
+It collect data from all sources and
+do distribution, handling, intial validation and routing.
+
+**How Does Data Arrive** Data arrives through transport protocols
+
+- **HTTP** - Its mnost common for web/mobile apps, IoT gateways.
+- **gRPC** - Used for service-to-service inside the microservice systems. Its binary and we never see
+- **TCP** - Transmission Control Protocol, which is used for the real-time chat, IoT devices
+
+All this data is collected and forword to
+streaming systems like Kafka
+
+#### Load Balncing
+
+Igestion has to handle the millions of requests, so we use Load Balncer which disrtibutes incomming traffic across multiple servers.its adds more servers if traffic increases and remove unhealth servers
+
+#### Intial Validation and Schema checks
+
+Before sending the data into the pipeline, ingestion performs some basic validation like is Required fields present, payload under size limit, is user authenticated like this if any thing fails its reject
+
+#### Routing
+
+After the validation, the ingestion layer decides where to send the data. do it need to send Kafka topic, microservice, real-time workers
+
+### Processing Stages
+
+After ingestion collects the raw data,the processing layer is responsible for the parsing, aggregation, rollups, indexing, transformation
+
+#### Parsing & Normalization
+
+Its converts raw data into structured,standardized format so all the data look alike
+
+#### Aggregation
+
+its converts data into summaries
+
+some of the commom pipeline aggression
+
+- Rates (events per second/minute)
+- Counts (total requests)
+- Averages, min, max, sums
+
+```raw data
+
+timestamp: 10:00:01 → 200 requests
+timestamp: 10:00:02 → 180 requests
+timestamp: 10:00:03 → 220 requests
+```
+
+```
+Average RPS = (200 + 180 + 220) / 3 = 200 rps
+```
+
+Which is used in observability dashboards
+
+#### Rollups (Long-term Storage Optimization)
+
+raw data is very large storing it all for long tern is very epensive
+so Rollup means converting the high quality data into a low quality summary
+
+```
+Second-level data:
+10:00:01 → 200 rps
+10:00:02 → 180 rps
+10:00:03 → 220 rps
+```
+
+Roll up into 1-minute buckets:
+
+```
+minute: 10:00 → avg=200, max=230, min=170
+minute: 10:01 → avg=210, max=240, min=180
+```
+
+raw data of seconds is discords in seconds while minutes remain for year
+
+#### Index
+
+its like directory, we dont need to search the entire book for the word, we are just look smartly checking the index page number for the start letter of the word. therefore we can easily reach that page. likewise without indexing , slow queries, with indexing quries happen in milliseconds
+
+Types of Indexing
+
+- Time-based indexing : which is used for the logs, mertrics.
+- Field-based indexing: Which is used for the querys
+
+#### Data Transformation & Enrichment
+
+Enrichments adds extra info to the raw data to make them more usefull using metdata
+
+raw data
+
+```
+{
+  "userId": 41,
+  "amount": 1200
+}
+```
+
+Enriched data:
+
+```
+{
+  "userId": 41,
+  "userTier": "Gold",
+  "region": "Hyderabad",
+  "device": "Android",
+  "amount": 1200,
+  "currency": "INR",
+  "convertedUSD": 14.4
+}
+```
+
+### Storage Layer
+
+After data is collected and processed, it needs to be stored in systems that are optimized for that specific type of data.
+Metrics, Logs, Traces all behave differently, so they require different kinds of storage.
+
+---
+
+#### Time-series Databases (for Metrics)
+
+Prometheus, InfluxDB, M3DB, VictoriaMetrics, ClickHouse
+
+Metrics are small numeric values written continuously.
+They are best stored in **time-series databases** because they are optimized for fast writes and time-based queries.
+
+Metrics are like health readings taken every second (heart rate, temperature).
+A time-series DB is like a notebook where each page has a timestamp and a number.
+
+---
+
+#### **Log Storage**
+
+Elasticsearch, Loki, ClickHouse
+
+Logs are text-heavy and can grow huge during failures.
+They need systems built for searching and filtering large amounts of text.
+
+Logs are like long receipts or chat messages.
+When something breaks, you scan through them to see what actually happened.
+
+---
+
+#### **Trace Storage**
+
+Jaeger (Cassandra/Elasticsearch), Tempo (S3/GCS)
+
+Traces store the entire journey of a request across microservices.
+They need storage that can handle large objects and link spans together.
+
+Traces are like a full route map of a delivery from start to end.
+
+---
+
+#### **Why different storage for different data types?**
+
+Each data type looks different and is queried differently:
+
+- Metrics = small numbers changing over time → need fast, time-based reads
+- Logs = huge text → need full-text search
+- Traces = structured tree-like data → need storage optimized for linking spans
+
+You don’t store books, food, and clothes on the same shelf.
+Each needs its own storage section.
+
+---
+
+#### **Hot vs Warm vs Cold Storage – what goes where?**
+
+Data is also stored based on how often you need it.
+
+#### **Hot Storage**
+
+Fast, expensive, short-term.
+
+- Recent metrics (last hours/days)
+- Recent logs for active debugging
+- Most recent traces
+
+---
+
+#### **Warm Storage**
+
+Medium cost, slower, kept for a longer time.
+
+- Older metrics (rolled up data)
+- Logs kept for a few weeks
+- Traces you need sometimes but not often
+
+---
+
+#### **Cold Storage**
+
+Very cheap, slow, long-term archives.
+
+- Compressed metrics
+- Old logs (months, years)
+- Traces archived to S3/GCS
+
+luggage stored in the storeroom or attic.
+
+---
+
+#### **Compression Techniques**
+
+To reduce cost, storage systems compress data:
+
+- Deduplication (removing repeated text)
+- Chunk compression (grouping time-series values together)
+- Dictionary encoding (common strings stored once)
+- Delta compression (store differences instead of full values)
+
+Instead of writing “CPU=10, CPU=11, CPU=12…” you write only the change.
+
+---
+
+#### **Retention Policies**
+
+Retention defines how long data is kept.
+
+- Metrics: usually keep detailed data for days, rolled-up data for months
+- Logs: expensive, often kept for 7–30 days
+- Traces: very heavy, kept for hours or days, then moved to cold storage
+
+---
+
+## **Query Layer**
+
+It helps us to ask questions on the stored data.
+We use different query languages for Metrics, Logs, and Traces because each data type behaves differently.
+
+### **Query languages**
+
+#### **PromQL (for Metrics)**
+
+Used to query metrics stored in systems like Prometheus.
+
+#### **LogQL (for Logs)**
+
+Used to search and filter logs in Loki.
+
+#### **TraceQL (for Traces)**
+
+Used to filter traces based on duration, errors, or which service was involved.
+
+#### **SQL (for ClickHouse / general data)**
+
+Used when observability data is stored in tables.
+
+### **How Are Queries Optimized?**
+
+To answer queries fast, systems use multiple optimizations:
+
+- **Indexes**
+  Just like index page in a book.
+  It helps jump directly to the exact data instead of reading everything.
+
+- **Sharding**
+  Data is divided across multiple servers.
+  Like splitting a large book into parts and giving each part to a different person to search faster.
+
+- **Columnar Storage (ClickHouse)**
+  Reads only the required columns.
+  Like reading only the “price” column in Excel without touching the rest.
+
+- **Pre-computation**
+  Some results are calculated in advance.
+  Like keeping monthly expenses ready instead of adding all bills every time.
+
+---
+
+### **Aggregation at Query Time vs Storage Time**
+
+Systems have two ways of combining data.
+
+#### **1. Aggregation at Query Time**
+
+Data is stored raw and calculations happen only when someone asks.
+
+- **Pros:**
+  Flexible queries, can compute anything whenever needed
+
+- **Cons:**
+  Slow when data volume is huge
+
+#### **2. Aggregation at Storage Time**
+
+Data is pre-aggregated before storing.
+
+- **Pros:**
+  Fast queries, reduced storage
+
+- **Cons:**
+  Less flexibility, because raw details are lost
+
+### **Caching Strategies**
+
+Caching is used to speed up repeated queries.
+
+- **In-memory cache:**
+  Stores recent query results.
+  Like keeping your frequently used tools on your desk.
+
+- **Query result cache:**
+  If same query comes again, return cached result instantly.
+
+- **Shard-level cache:**
+  Each server keeps hot data locally to avoid repeated disk reads.
+
+  ![Backend Pipeline Architecture](resource/screenshots/Backend-Pipeline-Architecture.png)
+
+---
+
+## **4. Intelligence Layer**
+
+### A. Insights
+
+Insights are meaningful findings we get from raw observability data.
+They help us understand what changed, what is trending, and what needs attention.
+
+### What are “insights” in observability?
+
+Insights are the final output that tells us something important.
+They convert raw numbers, logs, and traces into clear statements like:
+
+- “API latency increased 50% in the last hour”
+- “Error rate spiked for service X”
+- “Database CPU is trending upward for the last 3 days”
+
+### How are insights generated from raw data?
+
+The system looks at large amounts of metrics, logs, and traces and applies different techniques to find patterns.
+
+---
+
+### Pattern Recognition Techniques
+
+#### **1. Statistical Analysis**
+
+Used to understand the common behavior of the system.
+
+- **Mean** – average
+- **Median** – the middle value
+- **Percentiles** – like p95 and p99 latency
+- **Standard Deviation** – how much values fluctuate
+
+#### **2. Trend Analysis**
+
+Checks if something is going up, down, or staying stable.
+
+#### **3. Correlation Analysis**
+
+Finds which metrics or logs move together.
+
+Example:
+When **latency increases**, maybe **error rate** also increases.
+
+### **Machine Learning Approaches**
+
+Sometimes simple rules are not enough, so ML models detect deeper patterns.
+
+#### **1. Clustering**
+
+Groups similar patterns or behaviors together.
+Like grouping services with similar traffic patterns.
+
+#### **2. Forecasting**
+
+Predicting what will happen based on past trends.
+Example: predicting CPU usage for next 3 hours.
+
+#### **3. Classification**
+
+Models that tag events into categories.
+Example: labeling incidents as “timeout issue”, “DB issue”, “network issue”.
+
+- API latency increased 50% in last hour
+- Error rate suddenly spiked for service X
+- Disk usage will reach 90% in 3 days
+- Traffic dropped after last deployment
+- p99 latency is higher in EU region compared to US region
+
+## **B. Anomalies**
+
+An anomaly is something that behaves differently from the normal pattern.
+In observability, an anomaly means the system is acting in an unexpected way.
+
+### **What is an anomaly in observability context?**
+
+It is any sudden change or unusual pattern that does not match normal behavior.
+
+- Sudden spike in latency
+- Error rate jumping from 1% to 20%
+- CPU going from 40% to 95% in few seconds
+
+### **Anomaly Detection Methods**
+
+Different techniques are used to identify abnormal behaviors.
+
+### **1. Threshold-based**
+
+#### **Static Thresholds**
+
+Fixed limits.
+Example: alert when CPU > 85%.
+
+#### **Dynamic Thresholds**
+
+Limits change automatically based on past data.
+Example: latency > (normal + margin).
+
+#### **2. Statistical Methods**
+
+These use math to decide what is “normal”.
+
+- **Z-score** – how far a value is from the average
+- **IQR** – detects values outside the normal range
+- **Moving Averages** – sees if the current value is far away from the recent trend
+
+#### **3. Machine Learning Methods**
+
+Used when patterns are complex.
+
+- **Isolation Forests** – isolate strange data points
+- **Autoencoders** – learn normal patterns and detect unusual ones
+- **LSTM (Recurrent Networks)** – used for time-based predictions and anomalies
+
+#### **Handling Seasonality and Trends**
+
+Systems behave differently during peak hours, weekends, or deployments.
+Anomaly detection must understand these natural patterns.
+
+#### **False Positive Reduction**
+
+If the system alerts too often, engineers stop trusting alerts.
+To reduce false positives:
+
+- Combine multiple signals
+- Ignore short spikes
+- Apply smoothing
+- Use contextual data (deployments, maintenance)
+
+---
+
+#### **Severity Classification**
+
+Not all anomalies are equal.
+We classify them based on impact:
+
+- **Low** – minor spikes
+- **Medium** – noticeable but safe
+- **High** – likely impact on customers
+- **Critical** – system failure
+
+![Anomaly](resource/screenshots/Anomaly.png)
+
+### **C. Root Cause Analysis (RCA)**
+
+**1. What is RCA? Why is it difficult in distributed systems?**
+Root Cause Analysis (RCA) in observability is the process of identifying the underlying factor that triggered an incident. In modern distributed architectures—microservices, service meshes, event-driven systems—RCA is challenging because:
+
+- Failure modes propagate across multiple services and layers (compute, network, storage, external dependencies).
+- Symptoms often appear far away from the actual cause.
+- High cardinality data (labels, tags, metadata) increases search complexity.
+- Asynchronous communication, retries, and dynamic scaling hide causal chains.
+
+---
+
+**2. RCA Techniques**
+
+**A. Correlation analysis across metrics**
+Determine which metrics changed together in the same timeframe to narrow down potential causality.
+
+- Compare latency, error rate, throughput, saturation, resource utilization.
+- Identify “first metric to change,” not just the metrics that changed eventually.
+- Detect upstream/downstream correlation using time-aligned windows.
+
+**B. Dependency mapping (service mesh, call graphs)**
+Use service dependency graphs to determine which upstream component is likely generating the downstream symptom.
+
+- Outbound and inbound dependency analysis.
+- Dynamic topology through service discovery.
+- Identify choke points (e.g., a failing shared cache, database, or API gateway).
+
+**C. Trace analysis for bottlenecks**
+Distributed tracing helps identify where latency or errors originate.
+
+- Critical path identification.
+- Slow spans or high error spans.
+- Span-level metadata analysis (tags, events, errors).
+- Compare “normal traces” vs “slow traces” to isolate anomalies.
+
+**D. Log aggregation and pattern matching**
+Use logs to confirm or reject hypotheses formed from metrics and traces.
+
+- Error pattern clustering (e.g., stack trace grouping).
+- Log frequency analysis around incident windows.
+- Structured logs to identify failing code paths, request IDs, or exception types.
+
+**E. Change event correlation**
+Incidents frequently correlate with change events.
+
+- Deployment timestamps.
+- Configuration updates.
+- Infrastructure scaling events.
+- Feature flag toggles.
+  Aligning incident timeline with change timeline often identifies root causes quickly.
+
+**3. How Observability Platforms Support RCA**
+Modern observability systems streamline RCA by:
+
+- Providing unified metric-log-trace correlation.
+- Enabling dependency graph visualization.
+- Automatically highlighting anomalous time windows.
+- Offering comparison tooling (baseline vs incident).
+- Surfacing probable root causes using machine learning–based correlation engines.
+- Tagging data with workload metadata (service, version, region, pod, deployment).
+
+**4. Example RCA Workflow**
+**Scenario:** High latency alert triggered.
+
+1. **Identify affected service**
+   Confirm which service triggered the alert and review key metrics (latency, throughput, errors).
+
+2. **Inspect dependency impact**
+   Determine whether upstream or downstream dependencies show correlated changes.
+
+3. **Analyze slow traces**
+   Pull representative slow traces and inspect the critical path to find the slowest spans.
+
+4. **Break down problematic spans**
+   Examine span attributes: SQL timings, external API latency, lock contention, queue delays.
+
+5. **Correlate with logs**
+   Search log events for exceptions, timeouts, or retried requests matching trace IDs.
+
+6. **Check change events**
+   Compare the incident start time with deployment logs or config updates.
+
+7. **Determine root cause**
+   E.g., a new deployment introduced a slow database query, causing cascading latency.
+
+## 5. Observability User Experience
+
+### **A. Dashboard Patterns (Simple + Unpolished)**
+
+Dashboards are the screens where we see what is happening in our system.
+They take metrics, logs, traces and show them in charts so we can quickly understand if things are normal or broken.
+
+### **Common Visualization Types**
+
+#### **1. Time-series graphs**
+
+These show how a value changes over time.
+
+- Line graph
+- Area graph
+- Stacked graph
+  ![Line graph](resource/screenshots/LineGraph.png)
+  ![Area graph](resource/screenshots/AreaGrapg.png)
+
+**Ex:** CPU going up and down, latency increasing, error rate suddenly spiking.
+
+**Simple analogy:**
+Like the heart rate graph in hospitals that keeps moving.
+
+#### **2. Gauges / Single-Stat Panels**
+
+Shows one important number right now.
+
+- CPU now
+- Error rate now
+- Memory now
+
+Speedometer in a bike. Just one number.
+
+![Guages](resource/screenshots/Guages.png)
+
+#### **3. Heatmaps**
+
+Shows slow and fast requests as color blocks.
+Useful for seeing latency patterns.
+
+Like a weather heatmap showing hot and cold areas.
+
+![Heatmap](resource/screenshots/heatmap.png)
+
+#### **4. Histograms**
+
+Shows how many requests fall in each latency bucket.
+
+**Ex:**
+0–50ms, 50–100ms, 100–200ms.
+
+![Histogram](resource/screenshots/histogram.png)
+
+#### **5. Tables / Logs Panel**
+
+Shows exact values or logs.
+Useful when debugging specific issues.
+
+### **Dashboard Organization**
+
+Dashboards are usually split into groups based on what we want to monitor.
+
+#### **1. Infrastructure Dashboards**
+
+These show machine-level metrics:
+
+- CPU
+- Memory
+- Disk
+- Network
+- Node restarts
+
+Used to check:
+Is the server healthy?
+
+#### **2. Application Dashboards**
+
+Shows how the app is behaving:
+
+- Requests
+- Errors
+- Latency (p95, p99)
+- DB calls
+- Cache hits
+
+Focus: RED metrics (Rate, Errors, Duration).
+![Gapana dashboard](resource/screenshots/gafanaDashboard.png)
